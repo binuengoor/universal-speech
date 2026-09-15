@@ -194,7 +194,7 @@ curl http://localhost:8000/health
 
 ## ⚙️ Configuration Reference (`config.yaml`)
 
-Configuration can be set via `config.yaml` or environment variables (prefixed with `TTS_`):
+Configuration can be set via `config.yaml` or environment variables (prefixed with `SPEECH_` or `TTS_`):
 
 ```yaml
 server:
@@ -218,18 +218,44 @@ cache:
 circuit_breaker:
   enabled: true
   timeout_seconds: 5.0
-  fallback_engine: "piper"
-  fallback_voice: "en_US-ryan-medium"
+  fallback_engine: "kokoro"
+  fallback_voice: "af_heart"
+  cooldown_seconds: 60.0
+
+stt:
+  enabled: true
+  default_engine: "groq"
+  default_model: "whisper-1"
+  fallback_engine: "local-whisper"
+  cooldown_seconds: 60.0
+  engines:
+    groq:
+      enabled: true
+      api_key: ""                  # Or set via GROQ_API_KEY env var
+      default_model: "whisper-large-v3-turbo"
+      timeout_seconds: 10.0
+    local_whisper:
+      enabled: true
+      model_size: "base"           # tiny, base, small
+      device: "cpu"
+      compute_type: "int8"
+      cpu_threads: 4
+      models_dir: "models/whisper"
+    google_cloud:
+      enabled: true
+      credentials_path: "credentials/google-service-account.json"
+      language_code: "en-US"
+      timeout_seconds: 10.0
 ```
 
 ---
 
 ## 🧪 Benchmark & Testing
 
-Run the automated test and benchmark suite:
+Run the automated test suite (35+ unit & integration tests covering STT, TTS, caching, and fallback):
 
 ```bash
-pytest -v -s
+pytest -v
 ```
 
 Sample Benchmark Output:
