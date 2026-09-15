@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "universal-tts-gateway"
-version = "0.1.0"
-description = "Universal OpenAI-compatible Text-to-Speech (TTS) Gateway supporting Edge-TTS, Piper-TTS, and Kokoro-TTS"
+name = "universal-speech-gateway"
+version = "0.2.0"
+description = "Universal OpenAI-compatible Speech Gateway supporting Text-to-Speech (Edge-TTS, Kokoro, Google Cloud) and Speech-to-Text (Groq, faster-whisper, Google Cloud)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Universal TTS Team" }
+    { name = "Universal Speech Team" }
 ]
 dependencies = [
     "fastapi>=0.110.0",
@@ -23,12 +23,14 @@ dependencies = [
     "soundfile>=0.12.1",
     "numpy>=1.24.0",
     "google-cloud-texttospeech>=2.16.0",
+    "google-cloud-speech>=2.25.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
 all = [
     "kokoro-onnx>=0.3.0",
-    "piper-tts>=1.2.0",
+    "faster-whisper>=1.0.0",
 ]
 dev = [
     "pytest>=8.0.0",

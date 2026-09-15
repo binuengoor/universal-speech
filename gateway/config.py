@@ -59,14 +59,16 @@ class CacheConfig(BaseModel):
 class CircuitBreakerConfig(BaseModel):
     enabled: bool = True
     timeout_seconds: float = 5.0
-    fallback_engine: str = "piper"
-    fallback_voice: str = "en_US-ryan-medium"
+    fallback_engine: str = "kokoro"
+    fallback_voice: str = "af_heart"
+    cooldown_seconds: float = 60.0
 
 
 class PathsConfig(BaseModel):
     piper_models_dir: str = "models/piper"
     kokoro_model_path: str = "models/kokoro/kokoro-v1.0.onnx"
     kokoro_voices_path: str = "models/kokoro/voices-v1.0.bin"
+    whisper_models_dir: str = "models/whisper"
 
 
 class EngineDetailConfig(BaseModel):
@@ -89,12 +91,50 @@ class EnginesConfig(BaseModel):
         enabled=True, default_voice="en-US-AriaNeural", native_format="mp3", timeout_seconds=5.0
     )
     piper: EngineDetailConfig = EngineDetailConfig(
-        enabled=True, default_voice="en_US-ryan-medium", native_format="wav"
+        enabled=False, default_voice="en_US-ryan-medium", native_format="wav"
     )
     kokoro: EngineDetailConfig = EngineDetailConfig(
         enabled=True, default_voice="af_heart", native_format="wav"
     )
     google_cloud: GoogleEngineConfig = Field(default_factory=GoogleEngineConfig)
+
+
+class STTGroqConfig(BaseModel):
+    enabled: bool = True
+    api_key: str = ""
+    default_model: str = "whisper-large-v3-turbo"
+    timeout_seconds: float = 10.0
+
+
+class STTLocalWhisperConfig(BaseModel):
+    enabled: bool = True
+    model_size: str = "base"
+    device: str = "cpu"
+    compute_type: str = "int8"
+    cpu_threads: int = 4
+    models_dir: str = "models/whisper"
+
+
+class STTGoogleConfig(BaseModel):
+    enabled: bool = True
+    credentials_path: Optional[str] = "credentials/google-service-account.json"
+    language_code: str = "en-US"
+    timeout_seconds: float = 10.0
+
+
+class STTEnginesConfig(BaseModel):
+    groq: STTGroqConfig = Field(default_factory=STTGroqConfig)
+    local_whisper: STTLocalWhisperConfig = Field(default_factory=STTLocalWhisperConfig)
+    google_cloud: STTGoogleConfig = Field(default_factory=STTGoogleConfig)
+
+
+class STTConfig(BaseModel):
+    enabled: bool = True
+    default_engine: str = "groq"
+    default_model: str = "whisper-1"
+    fallback_engine: str = "local-whisper"
+    cooldown_seconds: float = 60.0
+    engines: STTEnginesConfig = Field(default_factory=STTEnginesConfig)
 
 
 class CuratedVoiceItem(BaseModel):
@@ -113,7 +153,7 @@ class CuratedVoicesConfig(BaseModel):
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="TTS_",
+        env_prefix="SPEECH_",
         env_nested_delimiter="__",
         extra="ignore",
     )
@@ -122,6 +162,7 @@ class AppSettings(BaseSettings):
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    stt: STTConfig = Field(default_factory=STTConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     engines: EnginesConfig = Field(default_factory=EnginesConfig)
     curated_voices: CuratedVoicesConfig = Field(default_factory=CuratedVoicesConfig)
@@ -130,13 +171,23 @@ class AppSettings(BaseSettings):
 
     @classmethod
     def load_from_yaml(cls, config_path: Optional[str] = None) -> "AppSettings":
-        path_to_try = config_path or os.getenv("TTS_CONFIG_PATH", "config.yaml")
+        path_to_try = config_path or os.getenv("SPEECH_CONFIG_PATH") or os.getenv("TTS_CONFIG_PATH", "config.yaml")
         yaml_data: Dict[str, Any] = {}
         if Path(path_to_try).exists():
             with open(path_to_try, "r", encoding="utf-8") as f:
                 loaded = yaml.safe_load(f)
                 if isinstance(loaded, dict):
                     yaml_data = loaded
+
+        # Overlay GROQ_API_KEY if present in environment
+        groq_env_key = os.getenv("GROQ_API_KEY", "")
+        if groq_env_key:
+            stt_dict = yaml_data.setdefault("stt", {})
+            stt_engines = stt_dict.setdefault("engines", {})
+            groq_dict = stt_engines.setdefault("groq", {})
+            if not groq_dict.get("api_key"):
+                groq_dict["api_key"] = groq_env_key
+
         return cls(**yaml_data)
 
 

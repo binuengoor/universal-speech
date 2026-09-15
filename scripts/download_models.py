@@ -45,16 +45,33 @@ def download_file(url: str, dest_path: str):
             dest.unlink(missing_ok=True)
 
 
+def download_whisper(model_size: str = "base", dest_dir: str = "models/whisper"):
+    print(f"\n--- Setting up faster-whisper ({model_size}) ---")
+    try:
+        from faster_whisper import WhisperModel
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        print(f"⬇ Pre-caching faster-whisper '{model_size}' model into {dest_dir}...")
+        WhisperModel(model_size, device="cpu", compute_type="int8", download_root=dest_dir)
+        print(f"✓ faster-whisper '{model_size}' model ready in {dest_dir}")
+    except Exception as e:
+        print(f"✗ Failed to pre-cache whisper model: {e}", file=sys.stderr)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Download default TTS model files")
-    parser.add_argument("--engine", choices=["all", "kokoro", "piper"], default="all")
+    parser = argparse.ArgumentParser(description="Download speech models (Kokoro TTS, Whisper STT)")
+    parser.add_argument("--engine", choices=["all", "kokoro", "whisper", "piper"], default="kokoro")
+    parser.add_argument("--whisper-model", default="base", help="Whisper model size (tiny, base, small)")
     args = parser.parse_args()
 
-    targets = ["kokoro", "piper"] if args.engine == "all" else [args.engine]
+    targets = ["kokoro"] if args.engine == "kokoro" else (["kokoro", "whisper"] if args.engine == "all" else [args.engine])
+
     for engine in targets:
-        print(f"\n--- Setting up {engine.upper()} models ---")
-        for url, path in MODELS[engine]:
-            download_file(url, path)
+        if engine == "whisper":
+            download_whisper(model_size=args.whisper_model)
+        elif engine in MODELS:
+            print(f"\n--- Setting up {engine.upper()} models ---")
+            for url, path in MODELS[engine]:
+                download_file(url, path)
 
     print("\n✓ Model setup complete.")
 

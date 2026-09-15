@@ -8,33 +8,34 @@ from gateway.router import TTSRouter
 async def test_circuit_breaker_fallback_on_edge_failure():
     settings = AppSettings()
     settings.circuit_breaker.enabled = True
-    settings.circuit_breaker.fallback_engine = "piper"
-    settings.circuit_breaker.fallback_voice = "en_US-ryan-medium"
+    settings.circuit_breaker.fallback_engine = "kokoro"
+    settings.circuit_breaker.fallback_voice = "af_heart"
 
     router = TTSRouter(settings=settings)
 
     # Mock edge engine failure
     router.engines["edge-tts"].synthesize_bytes = AsyncMock(side_effect=TimeoutError("Edge-TTS timed out"))
 
-    # Mock piper engine success
-    router.engines["piper"].synthesize_bytes = AsyncMock(return_value=(b"RIFF_mock_wav", "wav"))
+    # Mock kokoro engine success
+    router.engines["kokoro"].synthesize_bytes = AsyncMock(return_value=(b"RIFF_mock_kokoro_wav", "wav"))
 
     audio_bytes, fmt, engine_name = await router.synthesize(
-        text="Testing circuit breaker fallback",
+        text="Testing circuit breaker fallback to Kokoro",
         model="edge-tts",
         voice="en-US-AriaNeural",
     )
 
-    assert engine_name == "piper"
-    assert audio_bytes == b"RIFF_mock_wav"
+    assert engine_name == "kokoro"
+    assert audio_bytes == b"RIFF_mock_kokoro_wav"
     assert fmt == "wav"
     router.engines["edge-tts"].synthesize_bytes.assert_called_once()
-    router.engines["piper"].synthesize_bytes.assert_called_once()
+    router.engines["kokoro"].synthesize_bytes.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_voice_and_engine_resolution():
     settings = AppSettings()
+    settings.engines.piper.enabled = True  # Enable for legacy voice resolution test
     router = TTSRouter(settings=settings)
 
     # 1. Standard OpenAI voice alias
@@ -82,26 +83,26 @@ async def test_voice_and_engine_resolution():
 async def test_circuit_breaker_fallback_on_google_failure():
     settings = AppSettings()
     settings.circuit_breaker.enabled = True
-    settings.circuit_breaker.fallback_engine = "piper"
-    settings.circuit_breaker.fallback_voice = "en_US-ryan-medium"
+    settings.circuit_breaker.fallback_engine = "kokoro"
+    settings.circuit_breaker.fallback_voice = "af_heart"
 
     router = TTSRouter(settings=settings)
 
     # Mock google engine failure
     router.engines["google-cloud"].synthesize_bytes = AsyncMock(side_effect=TimeoutError("Google Cloud TTS timed out"))
 
-    # Mock piper engine success
-    router.engines["piper"].synthesize_bytes = AsyncMock(return_value=(b"RIFF_mock_wav", "wav"))
+    # Mock kokoro engine success
+    router.engines["kokoro"].synthesize_bytes = AsyncMock(return_value=(b"RIFF_mock_kokoro_wav", "wav"))
 
     audio_bytes, fmt, engine_name = await router.synthesize(
-        text="Testing google fallback",
+        text="Testing google fallback to Kokoro",
         model="google-cloud",
         voice="en-US-Neural2-F",
     )
 
-    assert engine_name == "piper"
-    assert audio_bytes == b"RIFF_mock_wav"
+    assert engine_name == "kokoro"
+    assert audio_bytes == b"RIFF_mock_kokoro_wav"
     assert fmt == "wav"
     router.engines["google-cloud"].synthesize_bytes.assert_called_once()
-    router.engines["piper"].synthesize_bytes.assert_called_once()
+    router.engines["kokoro"].synthesize_bytes.assert_called_once()
 

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from gateway.config import AppSettings
@@ -21,6 +22,7 @@ class TTSRouter:
     def __init__(self, settings: AppSettings):
         self.settings = settings
         self.engines: Dict[str, BaseTTSEngine] = {}
+        self._cooldowns: Dict[str, float] = {}  # engine_name -> cooldown_until_timestamp
         self._init_engines()
 
     def _init_engines(self) -> None:
@@ -50,6 +52,25 @@ class TTSRouter:
                 timeout_seconds=self.settings.engines.google_cloud.timeout_seconds or 8.0,
             )
 
+    def is_engine_available(self, name: str) -> bool:
+        if name not in self.engines:
+            return False
+        cooldown_until = self._cooldowns.get(name, 0.0)
+        return time.time() >= cooldown_until
+
+    def set_engine_cooldown(self, name: str) -> None:
+        cooldown_duration = self.settings.circuit_breaker.cooldown_seconds
+        self._cooldowns[name] = time.time() + cooldown_duration
+        logger.warning(
+            "⚡ TTS Engine '%s' placed in cooldown for %.0f seconds.",
+            name,
+            cooldown_duration,
+        )
+
+    def clear_engine_cooldown(self, name: str) -> None:
+        if name in self._cooldowns:
+            del self._cooldowns[name]
+
     def resolve_engine_and_voice(
         self,
         model: Optional[str],
@@ -77,23 +98,21 @@ class TTSRouter:
             target_engine_name = "kokoro"
         elif req_model in ("google", "google-tts", "google-cloud", "gcp-tts"):
             target_engine_name = "google-cloud"
-        elif req_model in ("tts-1", "tts-1-hd"):
-            # OpenAI standard model names map to default engine (edge-tts)
-            target_engine_name = self.settings.defaults.engine
         else:
-            # Infer from voice prefix/pattern
+            # Model was None, empty, "auto", "tts-1", "tts-1-hd", or unrecognized.
+            # Check voice heuristics first:
             if any(k in req_voice for k in ("Neural2", "Journey", "Studio", "Wavenet", "Standard", "Chirp")):
                 target_engine_name = "google-cloud"
             elif any(req_voice.startswith(p) for p in ("af_", "am_", "bf_", "bm_", "jf_", "jm_", "zf_", "zm_", "ef_", "ff_", "if_", "pf_", "hf_")):
                 target_engine_name = "kokoro"
-            elif "Neural" in req_voice or req_voice.count("-") >= 2 and not req_voice.endswith(("-low", "-medium", "-high")):
+            elif "Neural" in req_voice or (req_voice.count("-") >= 2 and not req_voice.endswith(("-low", "-medium", "-high"))):
                 target_engine_name = "edge-tts"
             elif req_voice.endswith(("-low", "-medium", "-high")) or "piper" in req_voice.lower():
                 target_engine_name = "piper"
             else:
                 target_engine_name = self.settings.defaults.engine
 
-        # Fallback to available engine if target engine is not registered
+        # If primary engine is not available or registered, pick next available
         if target_engine_name not in self.engines:
             target_engine_name = next(iter(self.engines)) if self.engines else "edge-tts"
 
@@ -119,11 +138,29 @@ class TTSRouter:
         response_format: Optional[str] = None,
     ) -> Tuple[bytes, str, str]:
         """
-        Synthesize audio with automatic circuit breaker fallback.
+        Synthesize audio with automatic circuit breaker cooldown fallback.
         Returns: (audio_bytes, format_name, resolved_engine_name)
         """
         primary_engine, resolved_voice = self.resolve_engine_and_voice(model, voice)
         target_fmt = self.resolve_format(primary_engine, response_format)
+
+        # Check if primary engine is cooling down
+        if not self.is_engine_available(primary_engine.engine_name):
+            logger.info(
+                "⚡ Primary engine '%s' is in cooldown. Short-circuiting to fallback...",
+                primary_engine.engine_name,
+            )
+            fallback_name = self.settings.circuit_breaker.fallback_engine
+            fallback_engine = self.engines.get(fallback_name)
+            if fallback_engine:
+                fb_voice = self.settings.circuit_breaker.fallback_voice
+                audio_bytes, out_fmt = await fallback_engine.synthesize_bytes(
+                    text=text,
+                    voice=fb_voice,
+                    speed=speed,
+                    response_format=target_fmt,
+                )
+                return audio_bytes, out_fmt, fallback_name
 
         try:
             audio_bytes, out_fmt = await primary_engine.synthesize_bytes(
@@ -132,6 +169,7 @@ class TTSRouter:
                 speed=speed,
                 response_format=target_fmt,
             )
+            self.clear_engine_cooldown(primary_engine.engine_name)
             return audio_bytes, out_fmt, primary_engine.engine_name
 
         except Exception as e:
@@ -140,12 +178,13 @@ class TTSRouter:
                 primary_engine.engine_name,
                 str(e),
             )
+            self.set_engine_cooldown(primary_engine.engine_name)
 
             # Circuit breaker fallback
-            if self.settings.circuit_breaker.enabled and primary_engine.engine_name in ("edge-tts", "google-cloud"):
+            if self.settings.circuit_breaker.enabled:
                 fallback_name = self.settings.circuit_breaker.fallback_engine
                 fallback_engine = self.engines.get(fallback_name)
-                if fallback_engine:
+                if fallback_engine and fallback_engine.engine_name != primary_engine.engine_name:
                     fallback_voice = self.settings.circuit_breaker.fallback_voice
                     logger.info(
                         "⚡ Circuit breaker triggered: Falling back from %s to %s (voice: %s)",

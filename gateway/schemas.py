@@ -19,7 +19,7 @@ class ModelObject(BaseModel):
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
-    owned_by: str = "universal-tts"
+    owned_by: str = "universal-speech"
 
 
 class ModelListResponse(BaseModel):
@@ -41,10 +41,44 @@ class VoiceListResponse(BaseModel):
     voices: List[VoiceObject]
 
 
+class TranscriptionResponse(BaseModel):
+    text: str
+
+
+class TranscriptionWord(BaseModel):
+    word: str
+    start: float
+    end: float
+
+
+class TranscriptionSegment(BaseModel):
+    id: int
+    seek: int = 0
+    start: float
+    end: float
+    text: str
+    tokens: List[int] = Field(default_factory=list)
+    temperature: float = 0.0
+    avg_logprob: float = 0.0
+    compression_ratio: float = 1.0
+    no_speech_prob: float = 0.0
+
+
+class TranscriptionVerboseResponse(BaseModel):
+    task: str = "transcribe"
+    language: str = "en"
+    duration: float = 0.0
+    text: str
+    words: Optional[List[TranscriptionWord]] = None
+    segments: Optional[List[TranscriptionSegment]] = None
+
+
 class HealthResponse(BaseModel):
     status: str
-    version: str = "0.1.0"
+    version: str = "0.2.0"
+    service: str = "universal-speech"
     default_engine: str
     default_voice: str
     engines: Dict[str, Any]
+    stt: Optional[Dict[str, Any]] = None
     cache: Dict[str, Any]

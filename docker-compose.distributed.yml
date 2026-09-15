@@ -1,10 +1,10 @@
 services:
   gateway:
-    image: ghcr.io/binuengoor/universal-tts:latest
+    image: ghcr.io/binuengoor/universal-speech:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: universal-tts-gateway
+    container_name: universal-speech-gateway
     restart: unless-stopped
     ports:
       - "8000:8000"

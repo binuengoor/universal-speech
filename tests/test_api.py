@@ -30,9 +30,11 @@ async def test_models_endpoint():
         assert data["object"] == "list"
         model_ids = [m["id"] for m in data["data"]]
         assert "edge-tts" in model_ids
-        assert "piper" in model_ids
         assert "kokoro" in model_ids
         assert "tts-1" in model_ids
+        assert "whisper-1" in model_ids
+        assert "groq" in model_ids
+        assert "local-whisper" in model_ids
 
 
 @pytest.mark.asyncio
@@ -70,6 +72,16 @@ async def test_speech_edge_tts_caching():
 
 @pytest.mark.asyncio
 async def test_speech_piper_engine():
+    # Dynamically mount piper engine into tts_router to verify backward compatibility
+    from gateway.main import tts_router
+    from gateway.engines.piper_engine import PiperEngine
+    from gateway.config import settings
+
+    tts_router.engines["piper"] = PiperEngine(
+        models_dir=settings.paths.piper_models_dir,
+        default_voice=settings.engines.piper.default_voice,
+    )
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         payload = {
             "model": "piper",

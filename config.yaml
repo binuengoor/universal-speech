@@ -19,13 +19,40 @@ cache:
 circuit_breaker:
   enabled: true
   timeout_seconds: 5.0
-  fallback_engine: "piper"
-  fallback_voice: "en_US-ryan-medium"
+  fallback_engine: "kokoro"
+  fallback_voice: "af_heart"
+  cooldown_seconds: 60.0
+
+stt:
+  enabled: true
+  default_engine: "groq"
+  default_model: "whisper-1"
+  fallback_engine: "local-whisper"
+  cooldown_seconds: 60.0
+  engines:
+    groq:
+      enabled: true
+      api_key: ""
+      default_model: "whisper-large-v3-turbo"
+      timeout_seconds: 10.0
+    local_whisper:
+      enabled: true
+      model_size: "base"
+      device: "cpu"
+      compute_type: "int8"
+      cpu_threads: 4
+      models_dir: "models/whisper"
+    google_cloud:
+      enabled: true
+      credentials_path: "credentials/google-service-account.json"
+      language_code: "en-US"
+      timeout_seconds: 10.0
 
 paths:
   piper_models_dir: "models/piper"
   kokoro_model_path: "models/kokoro/kokoro-v1.0.onnx"
   kokoro_voices_path: "models/kokoro/voices-v1.0.bin"
+  whisper_models_dir: "models/whisper"
 
 engines:
   edge_tts:
@@ -34,7 +61,7 @@ engines:
     native_format: "mp3"
     timeout_seconds: 5.0
   piper:
-    enabled: true
+    enabled: false
     default_voice: "en_US-ryan-medium"
     native_format: "wav"
   kokoro:

@@ -1,4 +1,4 @@
-# Multi-stage production build for Universal TTS Gateway
+# Multi-stage production build for Universal Speech Gateway
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
@@ -32,6 +32,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    SPEECH_CONFIG_PATH="/app/config.yaml" \
     TTS_CONFIG_PATH="/app/config.yaml"
 
 COPY gateway/ /app/gateway/
@@ -39,7 +40,7 @@ COPY config.yaml /app/config.yaml
 COPY scripts/ /app/scripts/
 
 # Create model directories
-RUN mkdir -p /app/models/kokoro /app/models/piper
+RUN mkdir -p /app/models/kokoro /app/models/whisper
 
 EXPOSE 8000
 

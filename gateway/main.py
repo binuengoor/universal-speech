@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 import logging
 import os
-from typing import Optional
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from typing import List, Optional
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -17,12 +17,13 @@ from gateway.schemas import (
     SpeechRequest,
     VoiceListResponse,
 )
+from gateway.stt.router import STTRouter
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("universal-tts")
+logger = logging.getLogger("universal-speech")
 
 # Global instances
 cache = AudioCache(
@@ -31,22 +32,24 @@ cache = AudioCache(
     max_memory_mb=settings.cache.max_memory_mb,
     ttl_seconds=settings.cache.ttl_seconds,
 )
-router = TTSRouter(settings=settings)
+tts_router = TTSRouter(settings=settings)
+stt_router = STTRouter(settings=settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Universal TTS Gateway...")
-    logger.info("Default Engine: %s | Default Voice: %s", settings.defaults.engine, settings.defaults.voice)
+    logger.info("Starting Universal Speech Gateway...")
+    logger.info("Default TTS Engine: %s | Default Voice: %s", settings.defaults.engine, settings.defaults.voice)
+    logger.info("Default STT Engine: %s | Default STT Model: %s", settings.stt.default_engine, settings.stt.default_model)
     logger.info("Cache Enabled: %s (Max: %s entries, %s MB)", settings.cache.enabled, settings.cache.max_entries, settings.cache.max_memory_mb)
     yield
-    logger.info("Shutting down Universal TTS Gateway...")
+    logger.info("Shutting down Universal Speech Gateway...")
 
 
 app = FastAPI(
-    title="Universal TTS Gateway",
-    description="OpenAI-compatible drop-in Text-to-Speech API gateway with multi-engine drivers (Edge-TTS, Piper, Kokoro).",
-    version="0.1.0",
+    title="Universal Speech Gateway",
+    description="OpenAI-compatible drop-in Speech Gateway supporting Text-to-Speech (Edge-TTS, Kokoro, Google Cloud) and Speech-to-Text (Groq, faster-whisper, Google Cloud).",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -82,11 +85,13 @@ def verify_api_key(authorization: Optional[str] = Header(None)) -> None:
 @app.get("/")
 async def root():
     return {
-        "service": "Universal TTS Gateway",
-        "version": "0.1.0",
-        "description": "1:1 drop-in replacement for OpenAI and Kokoro-FastAPI TTS endpoints",
+        "service": "Universal Speech Gateway",
+        "version": "0.2.0",
+        "description": "1:1 drop-in replacement for OpenAI Speech & Audio API endpoints",
         "endpoints": {
             "speech": "POST /v1/audio/speech",
+            "transcriptions": "POST /v1/audio/transcriptions",
+            "translations": "POST /v1/audio/translations",
             "models": "GET /v1/models",
             "voices": "GET /v1/audio/voices (or /v1/voices)",
             "health": "GET /health",
@@ -97,21 +102,40 @@ async def root():
 @app.get("/health", response_model=HealthResponse)
 @app.get("/healthz", response_model=HealthResponse)
 async def health_check():
-    engine_health = await router.get_engine_health()
-    all_ok = any(engine_health.values())
+    tts_health = await tts_router.get_engine_health()
+    stt_health = await stt_router.get_engine_health()
+    all_ok = any(tts_health.values())
     return HealthResponse(
         status="ok" if all_ok else "degraded",
-        version="0.1.0",
+        version="0.2.0",
+        service="universal-speech",
         default_engine=settings.defaults.engine,
         default_voice=settings.defaults.voice,
-        engines=engine_health,
+        engines=tts_health,
+        stt=stt_health,
         cache=cache.get_stats(),
     )
 
 
 @app.get("/v1/models", response_model=ModelListResponse, dependencies=[Depends(verify_api_key)])
 async def list_models():
-    model_ids = ["edge-tts", "piper", "kokoro", "google-cloud", "google-tts", "tts-1", "tts-1-hd"]
+    model_ids = [
+        # TTS models
+        "edge-tts",
+        "kokoro",
+        "google-cloud",
+        "tts-1",
+        "tts-1-hd",
+        # STT models
+        "whisper-1",
+        "whisper-large-v3-turbo",
+        "whisper-large-v3",
+        "groq",
+        "local-whisper",
+    ]
+    if settings.engines.piper.enabled:
+        model_ids.append("piper")
+
     models = [ModelObject(id=m) for m in model_ids]
     return ModelListResponse(data=models)
 
@@ -123,7 +147,7 @@ async def list_voices(
     locale: Optional[str] = Query(None, description="Filter voices by locale (e.g. en-US, ml-IN)"),
     engine: Optional[str] = Query(None, description="Filter voices by engine (e.g. google-cloud, edge-tts)"),
 ):
-    voices = await router.get_curated_voices(all=all, locale=locale, engine=engine)
+    voices = await tts_router.get_curated_voices(all=all, locale=locale, engine=engine)
     return VoiceListResponse(voices=voices)
 
 
@@ -132,8 +156,8 @@ async def create_speech(request: SpeechRequest):
     if not request.input.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Input text cannot be empty.")
 
-    engine, resolved_voice = router.resolve_engine_and_voice(request.model, request.voice)
-    target_format = router.resolve_format(engine, request.response_format)
+    engine, resolved_voice = tts_router.resolve_engine_and_voice(request.model, request.voice)
+    target_format = tts_router.resolve_format(engine, request.response_format)
     speed = request.speed or 1.0
 
     # Cache Lookup
@@ -161,7 +185,7 @@ async def create_speech(request: SpeechRequest):
 
     # Cache Miss -> Synthesize
     try:
-        audio_bytes, out_fmt, used_engine = await router.synthesize(
+        audio_bytes, out_fmt, used_engine = await tts_router.synthesize(
             text=request.input,
             model=request.model,
             voice=request.voice,
@@ -188,6 +212,99 @@ async def create_speech(request: SpeechRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"TTS synthesis failed: {str(e)}",
         )
+
+
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
+async def create_transcription(
+    file: UploadFile = File(..., description="Audio file to transcribe"),
+    model: str = Form("whisper-1", description="Model name or alias"),
+    language: Optional[str] = Form(None, description="Audio language code (e.g. en, fr, es)"),
+    prompt: Optional[str] = Form(None, description="Optional prompt guide"),
+    response_format: str = Form("json", description="json, text, srt, verbose_json, vtt"),
+    temperature: float = Form(0.0, ge=0.0, le=1.0),
+    timestamp_granularities: Optional[List[str]] = Form(None),
+):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded audio file is empty.")
+
+    filename = file.filename or "audio.wav"
+
+    try:
+        result, used_engine = await stt_router.transcribe(
+            audio_bytes=audio_bytes,
+            filename=filename,
+            model=model,
+            language=language,
+            prompt=prompt,
+            response_format=response_format,
+            temperature=temperature,
+            timestamp_granularities=timestamp_granularities,
+        )
+
+        headers = {
+            "X-Engine": used_engine,
+        }
+
+        if response_format in ("json", "verbose_json"):
+            return JSONResponse(content=result, headers=headers)
+        return Response(content=str(result), media_type="text/plain", headers=headers)
+
+    except Exception as e:
+        logger.error("STT Transcription error: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"STT transcription failed: {str(e)}",
+        )
+
+
+@app.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
+async def create_translation(
+    file: UploadFile = File(..., description="Audio file to translate to English"),
+    model: str = Form("whisper-1", description="Model name or alias"),
+    prompt: Optional[str] = Form(None, description="Optional prompt guide"),
+    response_format: str = Form("json", description="json, text, srt, verbose_json, vtt"),
+    temperature: float = Form(0.0, ge=0.0, le=1.0),
+):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded audio file is empty.")
+
+    filename = file.filename or "audio.wav"
+
+    try:
+        result, used_engine = await stt_router.translate(
+            audio_bytes=audio_bytes,
+            filename=filename,
+            model=model,
+            prompt=prompt,
+            response_format=response_format,
+            temperature=temperature,
+        )
+
+        headers = {
+            "X-Engine": used_engine,
+        }
+
+        if response_format in ("json", "verbose_json"):
+            return JSONResponse(content=result, headers=headers)
+        return Response(content=str(result), media_type="text/plain", headers=headers)
+
+    except Exception as e:
+        logger.error("STT Translation error: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"STT translation failed: {str(e)}",
+        )
+
+
+@app.post("/v1/audio/embeddings", dependencies=[Depends(verify_api_key)])
+async def create_audio_embeddings():
+    """Future audio search & embeddings stub."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Audio embeddings endpoint is reserved for future audio search and vector indexing.",
+    )
 
 
 if __name__ == "__main__":
