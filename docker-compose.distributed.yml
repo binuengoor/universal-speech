@@ -10,7 +10,10 @@ services:
       - "8000:8000"
       - "8880:8000"
     environment:
-      - TTS_DEFAULT_ENGINE=edge-tts
+      - SPEECH_DEFAULT_TTS_ENGINE=edge-tts
+      - SPEECH_DEFAULT_STT_ENGINE=groq
+      - SPEECH_DEFAULT_STT_MODEL=whisper-1
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
       - TTS_CACHE_ENABLED=true
       - TTS_CACHE_MAX_ENTRIES=1000
       - TTS_CACHE_MAX_MEMORY_MB=100
