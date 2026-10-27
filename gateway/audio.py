@@ -44,6 +44,10 @@ async def convert_audio_ffmpeg(
     }
 
     output_args = format_map.get(target_format.lower(), ["-f", target_format.lower()])
+    if target_format.lower() == "pcm" and not sample_rate:
+        # Raw PCM has no header: match OpenAI's contract (24kHz, 16-bit, mono).
+        sample_rate = 24000
+        output_args = ["-ac", "1", *output_args]
     rate_args = ["-ar", str(sample_rate)] if sample_rate else []
 
     cmd = [

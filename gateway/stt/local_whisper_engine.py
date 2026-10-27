@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from gateway.stt.base import BaseSTTEngine
@@ -31,11 +32,17 @@ class LocalWhisperEngine(BaseSTTEngine):
         self.cpu_threads = cpu_threads
         self.models_dir = models_dir
         self._model = None
-        self._init_lock = asyncio.Lock()
+        self._init_lock = threading.Lock()
 
     def _get_or_load_model(self):
         if self._model is not None:
             return self._model
+        with self._init_lock:
+            if self._model is None:
+                self._model = self._load_model()
+        return self._model
+
+    def _load_model(self):
 
         from faster_whisper import WhisperModel
 
@@ -49,7 +56,7 @@ class LocalWhisperEngine(BaseSTTEngine):
             self.compute_type,
             self.cpu_threads,
         )
-        self._model = WhisperModel(
+        model = WhisperModel(
             self.model_size,
             device=self.device,
             compute_type=self.compute_type,
@@ -57,7 +64,7 @@ class LocalWhisperEngine(BaseSTTEngine):
             download_root=str(download_path),
         )
         logger.info("faster-whisper model '%s' successfully loaded.", self.model_size)
-        return self._model
+        return model
 
     def _format_srt_time(self, seconds: float) -> str:
         hours = int(seconds // 3600)
@@ -166,9 +173,6 @@ class LocalWhisperEngine(BaseSTTEngine):
         temperature: float = 0.0,
         timestamp_granularities: Optional[List[str]] = None,
     ) -> Any:
-        async with self._init_lock:
-            pass
-
         return await asyncio.to_thread(
             self._run_transcription_sync,
             audio_bytes=audio_bytes,
@@ -188,9 +192,6 @@ class LocalWhisperEngine(BaseSTTEngine):
         response_format: str = "json",
         temperature: float = 0.0,
     ) -> Any:
-        async with self._init_lock:
-            pass
-
         return await asyncio.to_thread(
             self._run_transcription_sync,
             audio_bytes=audio_bytes,

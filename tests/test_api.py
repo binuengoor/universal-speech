@@ -47,6 +47,7 @@ async def test_voices_endpoint():
         assert len(data["voices"]) > 0
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_speech_edge_tts_caching():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -70,6 +71,7 @@ async def test_speech_edge_tts_caching():
         assert r2.content == r1.content
 
 
+@pytest.mark.piper
 @pytest.mark.asyncio
 async def test_speech_piper_engine():
     # Dynamically mount piper engine into tts_router to verify backward compatibility
@@ -94,6 +96,7 @@ async def test_speech_piper_engine():
         assert len(resp.content) > 100
 
 
+@pytest.mark.kokoro
 @pytest.mark.asyncio
 async def test_speech_kokoro_engine():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -101,6 +104,7 @@ async def test_speech_kokoro_engine():
             "model": "kokoro",
             "input": "Kokoro high fidelity test.",
             "voice": "af_heart",
+            "response_format": "wav",
         }
         resp = await ac.post("/v1/audio/speech", json=payload)
         assert resp.status_code == 200
@@ -108,6 +112,7 @@ async def test_speech_kokoro_engine():
         assert len(resp.content) > 100
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_speech_format_conversion():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
@@ -124,6 +129,7 @@ async def test_speech_format_conversion():
         assert resp.content.startswith(b"RIFF")
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_openai_sdk_compatibility():
     # Test using OpenAI client against the ASGI app via httpx client

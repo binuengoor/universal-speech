@@ -19,10 +19,12 @@ class GroqSTTEngine(BaseSTTEngine):
         self,
         api_key: str,
         default_model: str = "whisper-large-v3-turbo",
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = 30.0,
+        translation_model: str = "whisper-large-v3",
     ):
         self.api_key = api_key.strip()
         self.default_model = default_model
+        self.translation_model = translation_model
         self.timeout_seconds = timeout_seconds
 
     async def transcribe(
@@ -97,9 +99,9 @@ class GroqSTTEngine(BaseSTTEngine):
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        use_model = model or self.default_model
-        if use_model in ("whisper-1", "groq", "groq-whisper"):
-            use_model = self.default_model
+        use_model = model or self.translation_model
+        if use_model in ("whisper-1", "groq", "groq-whisper", "whisper-large-v3-turbo"):
+            use_model = self.translation_model
 
         data: Dict[str, Any] = {
             "model": use_model,

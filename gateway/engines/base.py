@@ -11,6 +11,19 @@ class BaseTTSEngine(ABC):
     engine_name: str
     native_format: str
     default_voice: str
+    min_speed: float = 0.25
+    max_speed: float = 4.0
+
+    def clamp_speed(self, speed: float) -> float:
+        return max(self.min_speed, min(self.max_speed, float(speed)))
+
+    def is_valid_voice(self, voice: str) -> bool:
+        """
+        Cheap, offline check that `voice` can be served by this engine.
+        Must not perform network or model I/O; used to reject bad requests
+        before they reach the engine (and trip the circuit breaker).
+        """
+        return bool(voice)
 
     @abstractmethod
     async def synthesize(

@@ -1,9 +1,17 @@
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_VOICE_MAP = {
     "alloy": "en-US-AriaNeural",
@@ -12,6 +20,42 @@ DEFAULT_OPENAI_VOICE_MAP = {
     "onyx": "en-US-ChristopherNeural",
     "nova": "en-US-JennyNeural",
     "shimmer": "en-US-AnaNeural",
+    "ash": "en-US-AndrewNeural",
+    "ballad": "en-GB-RyanNeural",
+    "coral": "en-US-EmmaNeural",
+    "sage": "en-US-AvaNeural",
+    "verse": "en-US-BrianNeural",
+}
+
+# OpenAI voice names mapped per engine, used when the request pins an engine
+# (e.g. model="kokoro", voice="alloy") so the voice is valid for that engine.
+DEFAULT_ENGINE_VOICE_MAPS: Dict[str, Dict[str, str]] = {
+    "kokoro": {
+        "alloy": "af_alloy",
+        "ash": "am_adam",
+        "ballad": "bm_george",
+        "coral": "af_bella",
+        "echo": "am_echo",
+        "fable": "bm_fable",
+        "nova": "af_nova",
+        "onyx": "am_onyx",
+        "sage": "af_sarah",
+        "shimmer": "af_sky",
+        "verse": "am_michael",
+    },
+    "google-cloud": {
+        "alloy": "en-US-Neural2-F",
+        "ash": "en-US-Neural2-D",
+        "ballad": "en-GB-Neural2-B",
+        "coral": "en-US-Neural2-C",
+        "echo": "en-US-Neural2-J",
+        "fable": "en-GB-Neural2-A",
+        "nova": "en-US-Neural2-H",
+        "onyx": "en-US-Neural2-D",
+        "sage": "en-US-Neural2-E",
+        "shimmer": "en-US-Neural2-G",
+        "verse": "en-US-Neural2-I",
+    },
 }
 
 DEFAULT_SHORT_ALIASES = {
@@ -34,12 +78,15 @@ DEFAULT_SHORT_ALIASES = {
     "journey-d": "en-US-Journey-D",
 }
 
+ENV_PREFIXES = ("SPEECH_", "TTS_")
+
 
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     api_key: str = ""
     cors_origins: List[str] = ["*"]
+    max_upload_mb: int = 25
 
 
 class DefaultsConfig(BaseModel):
@@ -58,7 +105,6 @@ class CacheConfig(BaseModel):
 
 class CircuitBreakerConfig(BaseModel):
     enabled: bool = True
-    timeout_seconds: float = 5.0
     fallback_engine: str = "kokoro"
     fallback_voice: str = "af_heart"
     cooldown_seconds: float = 60.0
@@ -76,6 +122,7 @@ class EngineDetailConfig(BaseModel):
     default_voice: str
     native_format: str = "wav"
     timeout_seconds: Optional[float] = None
+    max_concurrency: int = 0  # 0 = unlimited
 
 
 class GoogleEngineConfig(BaseModel):
@@ -84,17 +131,18 @@ class GoogleEngineConfig(BaseModel):
     default_voice: str = "en-US-Neural2-F"
     native_format: str = "mp3"
     timeout_seconds: Optional[float] = 8.0
+    max_concurrency: int = 0
 
 
 class EnginesConfig(BaseModel):
     edge_tts: EngineDetailConfig = EngineDetailConfig(
-        enabled=True, default_voice="en-US-AriaNeural", native_format="mp3", timeout_seconds=5.0
+        enabled=True, default_voice="en-US-AriaNeural", native_format="mp3", timeout_seconds=10.0
     )
     piper: EngineDetailConfig = EngineDetailConfig(
-        enabled=False, default_voice="en_US-ryan-medium", native_format="wav"
+        enabled=False, default_voice="en_US-ryan-medium", native_format="wav", max_concurrency=1
     )
     kokoro: EngineDetailConfig = EngineDetailConfig(
-        enabled=True, default_voice="af_heart", native_format="wav"
+        enabled=True, default_voice="af_heart", native_format="wav", max_concurrency=1
     )
     google_cloud: GoogleEngineConfig = Field(default_factory=GoogleEngineConfig)
 
@@ -103,7 +151,8 @@ class STTGroqConfig(BaseModel):
     enabled: bool = True
     api_key: str = ""
     default_model: str = "whisper-large-v3-turbo"
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = 30.0
+    translation_model: str = "whisper-large-v3"
 
 
 class STTLocalWhisperConfig(BaseModel):
@@ -151,12 +200,45 @@ class CuratedVoicesConfig(BaseModel):
     voices: List[CuratedVoiceItem] = Field(default_factory=list)
 
 
+class _DictSource(PydanticBaseSettingsSource):
+    """Settings source backed by a pre-loaded dict (YAML file or env shortcuts)."""
+
+    def __init__(self, settings_cls: Type[BaseSettings], data: Dict[str, Any]):
+        super().__init__(settings_cls)
+        self._data = data
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> Tuple[Any, str, bool]:
+        return self._data.get(field_name), field_name, False
+
+    def __call__(self) -> Dict[str, Any]:
+        return {k: v for k, v in self._data.items() if k in self.settings_cls.model_fields}
+
+
+def _env_shortcuts() -> Dict[str, Any]:
+    """Flat convenience variables that map onto nested settings."""
+    data: Dict[str, Any] = {}
+    api_key = os.getenv("SPEECH_API_KEY")
+    if api_key:
+        data.setdefault("server", {})["api_key"] = api_key
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        data.setdefault("stt", {}).setdefault("engines", {}).setdefault("groq", {})["api_key"] = groq_key
+    return data
+
+
 class AppSettings(BaseSettings):
+    """
+    Precedence (highest first): explicit init kwargs > SPEECH_* env (nested with "__")
+    > legacy TTS_* env > flat env shortcuts (SPEECH_API_KEY, GROQ_API_KEY) > config.yaml > defaults.
+    """
+
     model_config = SettingsConfigDict(
         env_prefix="SPEECH_",
         env_nested_delimiter="__",
         extra="ignore",
     )
+
+    _yaml_data: ClassVar[Dict[str, Any]] = {}
 
     server: ServerConfig = Field(default_factory=ServerConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
@@ -167,7 +249,32 @@ class AppSettings(BaseSettings):
     engines: EnginesConfig = Field(default_factory=EnginesConfig)
     curated_voices: CuratedVoicesConfig = Field(default_factory=CuratedVoicesConfig)
     openai_voice_map: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_OPENAI_VOICE_MAP))
+    engine_voice_maps: Dict[str, Dict[str, str]] = Field(
+        default_factory=lambda: {k: dict(v) for k, v in DEFAULT_ENGINE_VOICE_MAPS.items()}
+    )
     short_aliases: Dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_SHORT_ALIASES))
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        from pydantic_settings import EnvSettingsSource
+
+        legacy_env = EnvSettingsSource(settings_cls, env_prefix="TTS_", env_nested_delimiter="__")
+        return (
+            init_settings,
+            env_settings,
+            legacy_env,
+            _DictSource(settings_cls, _env_shortcuts()),
+            dotenv_settings,
+            _DictSource(settings_cls, cls._yaml_data),
+            file_secret_settings,
+        )
 
     @classmethod
     def load_from_yaml(cls, config_path: Optional[str] = None) -> "AppSettings":
@@ -179,16 +286,11 @@ class AppSettings(BaseSettings):
                 if isinstance(loaded, dict):
                     yaml_data = loaded
 
-        # Overlay GROQ_API_KEY if present in environment
-        groq_env_key = os.getenv("GROQ_API_KEY", "")
-        if groq_env_key:
-            stt_dict = yaml_data.setdefault("stt", {})
-            stt_engines = stt_dict.setdefault("engines", {})
-            groq_dict = stt_engines.setdefault("groq", {})
-            if not groq_dict.get("api_key"):
-                groq_dict["api_key"] = groq_env_key
-
-        return cls(**yaml_data)
+        cls._yaml_data = yaml_data
+        try:
+            return cls()
+        finally:
+            cls._yaml_data = {}
 
 
 settings = AppSettings.load_from_yaml()

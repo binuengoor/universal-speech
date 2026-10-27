@@ -7,12 +7,12 @@ AudioFormat = Literal["mp3", "opus", "aac", "flac", "wav", "pcm"]
 
 
 class SpeechRequest(BaseModel):
-    model: str = Field(default="edge-tts", description="TTS model/engine name or alias ('edge-tts', 'piper', 'kokoro', 'tts-1', 'tts-1-hd')")
+    model: Optional[str] = Field(default=None, description="TTS model/engine name or alias ('edge-tts', 'piper', 'kokoro', 'google-cloud', 'tts-1', 'tts-1-hd'). Defaults to config defaults.engine")
     input: str = Field(..., max_length=10000, description="The text to generate audio for")
-    voice: str = Field(default="en-US-AriaNeural", description="Voice ID or alias")
-    response_format: Optional[AudioFormat] = Field(default=None, description="Audio format: mp3, opus, aac, flac, wav, pcm")
-    speed: Optional[float] = Field(default=1.0, ge=0.25, le=4.0, description="Speed of generated audio")
-    stream: Optional[bool] = Field(default=False, description="Whether to stream audio chunks directly")
+    voice: Optional[str] = Field(default=None, description="Voice ID or alias. Defaults to config defaults.voice")
+    response_format: Optional[AudioFormat] = Field(default=None, description="Audio format: mp3, opus, aac, flac, wav, pcm. Defaults to config defaults.response_format")
+    speed: Optional[float] = Field(default=None, ge=0.25, le=4.0, description="Speed of generated audio (clamped to the engine's supported range)")
+    stream: Optional[bool] = Field(default=False, description="Accepted for OpenAI compatibility; responses are always returned whole")
 
 
 class ModelObject(BaseModel):

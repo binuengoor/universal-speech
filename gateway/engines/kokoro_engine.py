@@ -1,6 +1,8 @@
 import asyncio
 import io
 import logging
+import re
+import threading
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 import soundfile as sf
@@ -12,10 +14,14 @@ from gateway.schemas import VoiceObject
 
 logger = logging.getLogger(__name__)
 
+_KOKORO_VOICE_RE = re.compile(r"^[a-z][fm]_[a-z]+$")
+
 
 class KokoroEngine(BaseTTSEngine):
     engine_name = "kokoro"
     native_format = "wav"
+    min_speed = 0.5
+    max_speed = 2.0
 
     def __init__(
         self,
@@ -27,11 +33,27 @@ class KokoroEngine(BaseTTSEngine):
         self.voices_path = Path(voices_path)
         self.default_voice = default_voice
         self._kokoro_instance = None
-        self._lock = asyncio.Lock()
+        self._voice_names: Optional[List[str]] = None
+        self._lock = threading.Lock()
+
+    def is_valid_voice(self, voice: str) -> bool:
+        if self._voice_names:
+            return voice in self._voice_names
+        return bool(_KOKORO_VOICE_RE.match(voice))
 
     def _ensure_loaded(self):
         if self._kokoro_instance is not None:
             return self._kokoro_instance
+        with self._lock:
+            if self._kokoro_instance is None:
+                self._kokoro_instance = self._load()
+                try:
+                    self._voice_names = list(self._kokoro_instance.get_voices())
+                except Exception:
+                    self._voice_names = None
+        return self._kokoro_instance
+
+    def _load(self):
 
         if not self.model_path.exists() or not self.voices_path.exists():
             raise FileNotFoundError(
@@ -42,11 +64,10 @@ class KokoroEngine(BaseTTSEngine):
         try:
             from kokoro_onnx import Kokoro
             logger.info("Loading Kokoro ONNX model from %s...", self.model_path)
-            self._kokoro_instance = Kokoro(
+            return Kokoro(
                 model_path=str(self.model_path),
                 voices_path=str(self.voices_path),
             )
-            return self._kokoro_instance
         except Exception as e:
             logger.error("Failed to initialize Kokoro engine: %s", str(e))
             raise
@@ -81,7 +102,7 @@ class KokoroEngine(BaseTTSEngine):
         samples, sample_rate = kokoro.create(
             text=text,
             voice=target_voice,
-            speed=speed,
+            speed=self.clamp_speed(speed),
             lang=lang,
         )
 
@@ -126,11 +147,10 @@ class KokoroEngine(BaseTTSEngine):
 
         if self.model_path.exists() and self.voices_path.exists():
             try:
-                kokoro = self._ensure_loaded()
-                if hasattr(kokoro, "get_voices"):
-                    v_list = kokoro.get_voices()
-                    if v_list:
-                        known_voices = v_list
+                # Loading the model is slow and CPU-bound: keep it off the event loop.
+                await asyncio.to_thread(self._ensure_loaded)
+                if self._voice_names:
+                    known_voices = self._voice_names
             except Exception:
                 pass
 

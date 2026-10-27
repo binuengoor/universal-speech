@@ -32,6 +32,9 @@ all = [
     "kokoro-onnx>=0.3.0",
     "faster-whisper>=1.0.0",
 ]
+piper = [
+    "piper-tts>=1.3.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -46,3 +49,8 @@ include = ["gateway*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "network: needs live third-party services (set RUN_NETWORK_TESTS=1)",
+    "kokoro: needs downloaded Kokoro model files",
+    "piper: needs piper-tts and a downloaded Piper voice",
+]

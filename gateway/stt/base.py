@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
+
+ALL_RESPONSE_FORMATS: FrozenSet[str] = frozenset({"json", "text", "srt", "verbose_json", "vtt"})
 
 
 class BaseSTTEngine(ABC):
@@ -9,6 +11,16 @@ class BaseSTTEngine(ABC):
 
     engine_name: str
     default_model: str
+    supported_formats: FrozenSet[str] = ALL_RESPONSE_FORMATS
+    supports_translation: bool = True
+
+    def can_handle(self, filename: str, response_format: str, task: str) -> bool:
+        """Cheap capability check used by the router to skip engines up front."""
+        if response_format not in self.supported_formats:
+            return False
+        if task == "translate" and not self.supports_translation:
+            return False
+        return True
 
     @abstractmethod
     async def transcribe(
