@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from gateway.config import AppSettings
+from gateway.errors import InvalidRequestError, is_client_error
 from gateway.stt.base import BaseSTTEngine
 from gateway.stt.google_stt_engine import GoogleSTTEngine
 from gateway.stt.groq_engine import GroqSTTEngine
@@ -19,6 +21,8 @@ class STTRouter:
         self.settings = settings
         self.engines: Dict[str, BaseSTTEngine] = {}
         self._cooldowns: Dict[str, float] = {}  # engine_name -> cooldown_until_timestamp
+        # Local Whisper is CPU-bound and already multi-threaded; run one job at a time.
+        self._local_semaphore = asyncio.Semaphore(1)
         self._init_engines()
 
     def _init_engines(self) -> None:
@@ -30,6 +34,7 @@ class STTRouter:
                 api_key=stt_cfg.engines.groq.api_key,
                 default_model=stt_cfg.engines.groq.default_model,
                 timeout_seconds=stt_cfg.engines.groq.timeout_seconds,
+                translation_model=stt_cfg.engines.groq.translation_model,
             )
 
         # 2. Google Cloud STT
@@ -69,7 +74,22 @@ class STTRouter:
         if name in self._cooldowns:
             del self._cooldowns[name]
 
-    def resolve_candidate_engines(self, requested_model: Optional[str]) -> List[BaseSTTEngine]:
+    def resolve_candidate_engines(
+        self,
+        requested_model: Optional[str],
+        filename: str = "audio.wav",
+        response_format: str = "json",
+        task: str = "transcribe",
+    ) -> List[BaseSTTEngine]:
+        candidates = self._ordered_engines(requested_model)
+        capable = [e for e in candidates if e.can_handle(filename, response_format, task)]
+        if candidates and not capable:
+            raise InvalidRequestError(
+                f"No configured STT engine supports response_format='{response_format}' for {task}"
+            )
+        return capable
+
+    def _ordered_engines(self, requested_model: Optional[str]) -> List[BaseSTTEngine]:
         req = (requested_model or "").lower().strip()
         stt_cfg = self.settings.stt
 
@@ -107,6 +127,38 @@ class STTRouter:
 
         return candidates
 
+    async def _call(self, engine: BaseSTTEngine, method: str, **kwargs) -> Any:
+        fn = getattr(engine, method)
+        if engine.engine_name == "local-whisper":
+            async with self._local_semaphore:
+                return await fn(**kwargs)
+        return await fn(**kwargs)
+
+    async def _run_with_fallback(self, task: str, filename: str, model: Optional[str], response_format: str, **kwargs) -> Tuple[Any, str]:
+        candidates = self.resolve_candidate_engines(model, filename, response_format, task)
+        if not candidates:
+            raise RuntimeError("No STT engines are configured or available.")
+
+        method = "transcribe" if task == "transcribe" else "translate"
+        last_err: Optional[BaseException] = None
+        for engine in candidates:
+            try:
+                result = await self._call(
+                    engine, method, filename=filename, model=model, response_format=response_format, **kwargs
+                )
+                self.clear_engine_cooldown(engine.engine_name)
+                return result, engine.engine_name
+            except Exception as e:
+                if is_client_error(e):
+                    # Corrupt/unsupported audio or bad parameters: the next engine would
+                    # fail the same way, and no engine should be put in cooldown for it.
+                    raise InvalidRequestError(f"STT request rejected by '{engine.engine_name}': {e}") from e
+                logger.warning("STT engine '%s' %s failed: %s", engine.engine_name, task, str(e))
+                self.set_engine_cooldown(engine.engine_name)
+                last_err = e
+
+        raise RuntimeError(f"All STT engines failed for {task}. Last error: {last_err}")
+
     async def transcribe(
         self,
         audio_bytes: bytes,
@@ -118,35 +170,17 @@ class STTRouter:
         temperature: float = 0.0,
         timestamp_granularities: Optional[List[str]] = None,
     ) -> Tuple[Any, str]:
-        candidates = self.resolve_candidate_engines(model)
-        if not candidates:
-            raise RuntimeError("No STT engines are configured or available.")
-
-        last_err = None
-        for engine in candidates:
-            try:
-                result = await engine.transcribe(
-                    audio_bytes=audio_bytes,
-                    filename=filename,
-                    model=model,
-                    language=language,
-                    prompt=prompt,
-                    response_format=response_format,
-                    temperature=temperature,
-                    timestamp_granularities=timestamp_granularities,
-                )
-                self.clear_engine_cooldown(engine.engine_name)
-                return result, engine.engine_name
-            except Exception as e:
-                logger.warning(
-                    "STT engine '%s' failed: %s",
-                    engine.engine_name,
-                    str(e),
-                )
-                self.set_engine_cooldown(engine.engine_name)
-                last_err = e
-
-        raise RuntimeError(f"All STT engines failed. Last error: {last_err}")
+        return await self._run_with_fallback(
+            "transcribe",
+            filename,
+            model,
+            response_format,
+            audio_bytes=audio_bytes,
+            language=language,
+            prompt=prompt,
+            temperature=temperature,
+            timestamp_granularities=timestamp_granularities,
+        )
 
     async def translate(
         self,
@@ -157,33 +191,15 @@ class STTRouter:
         response_format: str = "json",
         temperature: float = 0.0,
     ) -> Tuple[Any, str]:
-        candidates = self.resolve_candidate_engines(model)
-        if not candidates:
-            raise RuntimeError("No STT engines are configured or available.")
-
-        last_err = None
-        for engine in candidates:
-            try:
-                result = await engine.translate(
-                    audio_bytes=audio_bytes,
-                    filename=filename,
-                    model=model,
-                    prompt=prompt,
-                    response_format=response_format,
-                    temperature=temperature,
-                )
-                self.clear_engine_cooldown(engine.engine_name)
-                return result, engine.engine_name
-            except Exception as e:
-                logger.warning(
-                    "STT engine '%s' translation failed: %s",
-                    engine.engine_name,
-                    str(e),
-                )
-                self.set_engine_cooldown(engine.engine_name)
-                last_err = e
-
-        raise RuntimeError(f"All STT translation engines failed. Last error: {last_err}")
+        return await self._run_with_fallback(
+            "translate",
+            filename,
+            model,
+            response_format,
+            audio_bytes=audio_bytes,
+            prompt=prompt,
+            temperature=temperature,
+        )
 
     async def get_engine_health(self) -> Dict[str, Any]:
         health: Dict[str, Any] = {}

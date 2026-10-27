@@ -40,6 +40,8 @@ async def measure_request(ac: AsyncClient, payload: dict) -> dict:
     }
 
 
+@pytest.mark.network
+@pytest.mark.kokoro
 @pytest.mark.asyncio
 async def test_benchmark_suite():
     cache.clear()

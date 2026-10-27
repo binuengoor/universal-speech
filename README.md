@@ -19,7 +19,8 @@ A production-grade, multi-architecture, OpenAI-compatible Speech Gateway providi
 - **Zero-Transcode Fast Passthrough:** 
   - Direct forwarding of incoming audio formats (MP3, WAV, M4A, OGG, WebM) to Groq without server CPU transcoding penalty.
   - Native MP3 passthrough for Edge-TTS and WAV passthrough for Kokoro.
-- **Resilient Cooldown Fallback:** Automatic cooldown tracking (60s) instantly skips failing upstreams with **0ms wait time** to maintain uninterrupted client service.
+- **Resilient Cooldown Fallback:** Automatic cooldown tracking (60s) instantly skips failing upstreams with **0ms wait time** to maintain uninterrupted client service. Only real outages (timeouts, connection and 5xx errors) trip the breaker; bad requests (unknown voice, unsupported format) return `400` and never affect other clients.
+- **Honest fallback:** Audio produced by the fallback engine is flagged with `X-Fallback: true`, `X-Engine` and `X-Voice` response headers and `Cache-Control: no-store`, and is never cached under the requested voice. Send `X-No-Fallback: 1` to get a `503` instead of a substitute voice.
 - **In-Memory LRU Audio Cache:** SHA-256 keyed cache (500 entries, ~50MB RAM limit) delivering **< 1ms response times** for repeated smart home and assistant phrases.
 - **Multi-Architecture Docker:** Built for `linux/amd64` (x86_64: Intel Core, Alder Lake-N) and `linux/arm64` (Apple Silicon, Oracle Cloud ARM Neoverse-N1, Raspberry Pi 5).
 
@@ -186,22 +187,47 @@ curl http://localhost:8000/v1/models
 # List all available voices across all engines
 curl http://localhost:8000/v1/audio/voices
 
-# Gateway & Engine Health Status
+# Only TTS (or STT) models
+curl "http://localhost:8000/v1/models?type=tts"
+
+# Gateway & Engine Health Status (liveness, always 200 while running)
 curl http://localhost:8000/health
+
+# Readiness (503 when no TTS engine is usable)
+curl http://localhost:8000/ready
 ```
+
+### Response headers (`/v1/audio/speech`)
+
+| Header | Meaning |
+|---|---|
+| `X-Cache` | `HIT` or `MISS` for the in-memory cache |
+| `X-Engine` / `X-Voice` | Engine and voice that actually produced the audio |
+| `X-Fallback` | `true` when the fallback engine substituted for the requested one |
 
 ---
 
 ## ⚙️ Configuration Reference (`config.yaml`)
 
-Configuration can be set via `config.yaml` or environment variables (prefixed with `SPEECH_` or `TTS_`):
+Configuration can be set via `config.yaml` or environment variables. **Environment variables always override `config.yaml`.** Use the `SPEECH_` prefix with `__` for nesting (legacy `TTS_` prefix also works):
+
+| Env var | Equivalent `config.yaml` key |
+|---|---|
+| `SPEECH_API_KEY` (shortcut) or `SPEECH_SERVER__API_KEY` | `server.api_key` |
+| `GROQ_API_KEY` (shortcut) | `stt.engines.groq.api_key` |
+| `SPEECH_DEFAULTS__ENGINE`, `SPEECH_DEFAULTS__VOICE` | `defaults.engine`, `defaults.voice` |
+| `SPEECH_CACHE__MAX_ENTRIES` | `cache.max_entries` |
+| `EDGE_TTS_PROXY` | Outbound proxy URL for Edge-TTS |
+
+> ⚠️ Without an API key the gateway accepts unauthenticated requests (a warning is logged at startup). Set `SPEECH_API_KEY` whenever the port is reachable beyond a trusted network.
 
 ```yaml
 server:
   host: "0.0.0.0"
   port: 8000
   api_key: ""                      # Optional Bearer token authentication
-  cors_origins: ["*"]
+  cors_origins: ["*"]              # Credentials are only allowed with explicit origins
+  max_upload_mb: 25                # STT upload limit (413 above it)
 
 defaults:
   engine: "edge-tts"
@@ -217,7 +243,6 @@ cache:
 
 circuit_breaker:
   enabled: true
-  timeout_seconds: 5.0
   fallback_engine: "kokoro"
   fallback_voice: "af_heart"
   cooldown_seconds: 60.0
@@ -233,7 +258,8 @@ stt:
       enabled: true
       api_key: ""                  # Or set via GROQ_API_KEY env var
       default_model: "whisper-large-v3-turbo"
-      timeout_seconds: 10.0
+      translation_model: "whisper-large-v3" # turbo does not support translation
+      timeout_seconds: 30.0
     local_whisper:
       enabled: true
       model_size: "base"           # tiny, base, small
@@ -252,11 +278,15 @@ stt:
 
 ## 🧪 Benchmark & Testing
 
-Run the automated test suite (35+ unit & integration tests covering STT, TTS, caching, and fallback):
+Run the automated test suite (unit & integration tests covering STT, TTS, caching, fallback, auth and config):
 
 ```bash
-pytest -v
+pytest -v                       # offline: tests needing Edge or model files are skipped
+RUN_NETWORK_TESTS=1 pytest -v   # also hit live Edge-TTS
+python scripts/download_models.py --engine kokoro   # enables the Kokoro tests
 ```
+
+Piper is optional: install it with `pip install ".[piper]"` (or `uv sync --extra piper`) and set `engines.piper.enabled: true`.
 
 Sample Benchmark Output:
 ```text

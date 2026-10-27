@@ -10,18 +10,20 @@ services:
       - "8000:8000"
       - "8880:8000"
     environment:
-      - SPEECH_DEFAULT_TTS_ENGINE=edge-tts
-      - SPEECH_DEFAULT_STT_ENGINE=groq
-      - SPEECH_DEFAULT_STT_MODEL=whisper-1
+      # Env vars override config.yaml. Nested keys use "__", e.g. SPEECH_CACHE__MAX_ENTRIES.
+      - SPEECH_API_KEY=${SPEECH_API_KEY:-}
+      - SPEECH_DEFAULTS__ENGINE=edge-tts
+      - SPEECH_DEFAULTS__VOICE=en-US-AriaNeural
+      - SPEECH_STT__DEFAULT_ENGINE=groq
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - TTS_CACHE_ENABLED=true
-      - TTS_CACHE_MAX_ENTRIES=1000
-      - TTS_CACHE_MAX_MEMORY_MB=100
+      - SPEECH_CACHE__ENABLED=true
+      - SPEECH_CACHE__MAX_ENTRIES=1000
+      - SPEECH_CACHE__MAX_MEMORY_MB=100
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./models:/app/models
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

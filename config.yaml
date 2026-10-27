@@ -1,8 +1,9 @@
 server:
   host: "0.0.0.0"
   port: 8000
-  api_key: ""
+  api_key: ""                 # Prefer setting SPEECH_API_KEY (env always overrides this file)
   cors_origins: ["*"]
+  max_upload_mb: 25           # Upper bound for STT uploads
 
 defaults:
   engine: "edge-tts"
@@ -18,7 +19,6 @@ cache:
 
 circuit_breaker:
   enabled: true
-  timeout_seconds: 5.0
   fallback_engine: "kokoro"
   fallback_voice: "af_heart"
   cooldown_seconds: 60.0
@@ -34,7 +34,8 @@ stt:
       enabled: true
       api_key: ""
       default_model: "whisper-large-v3-turbo"
-      timeout_seconds: 10.0
+      translation_model: "whisper-large-v3"   # turbo does not support translation
+      timeout_seconds: 30.0
     local_whisper:
       enabled: true
       model_size: "base"
@@ -59,15 +60,17 @@ engines:
     enabled: true
     default_voice: "en-US-AriaNeural"
     native_format: "mp3"
-    timeout_seconds: 5.0
+    timeout_seconds: 10.0      # Idle timeout between audio chunks, not a whole-request cap
   piper:
     enabled: false
     default_voice: "en_US-ryan-medium"
     native_format: "wav"
+    max_concurrency: 1
   kokoro:
     enabled: true
     default_voice: "af_heart"
     native_format: "wav"
+    max_concurrency: 1         # CPU-bound: serialize to avoid oversubscription
   google_cloud:
     enabled: true
     credentials_path: "credentials/google-service-account.json"
@@ -82,6 +85,11 @@ openai_voice_map:
   onyx: "en-US-ChristopherNeural"
   nova: "en-US-JennyNeural"
   shimmer: "en-US-AnaNeural"
+  ash: "en-US-AndrewNeural"
+  ballad: "en-GB-RyanNeural"
+  coral: "en-US-EmmaNeural"
+  sage: "en-US-AvaNeural"
+  verse: "en-US-BrianNeural"
 
 short_aliases:
   aria: "en-US-AriaNeural"
@@ -99,8 +107,8 @@ short_aliases:
   michael: "am_michael"
   neural2-f: "en-US-Neural2-F"
   neural2-d: "en-US-Neural2-D"
-  journey-f: "en-US-Chirp-HD-F"
-  journey-d: "en-US-Chirp-HD-D"
+  journey-f: "en-US-Journey-F"
+  journey-d: "en-US-Journey-D"
   chirp-hd-f: "en-US-Chirp-HD-F"
   chirp-hd-d: "en-US-Chirp-HD-D"
 

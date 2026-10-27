@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -12,10 +13,60 @@ from gateway.schemas import VoiceObject
 
 logger = logging.getLogger(__name__)
 
+_GOOGLE_VOICE_RE = re.compile(r"^[a-z]{2,3}-[A-Z]{2}-[A-Za-z0-9]+(-[A-Za-z0-9]+)*$")
+
+# Google rejects SynthesisInput.text above 5000 bytes; keep a safety margin.
+MAX_INPUT_BYTES = 4800
+
+
+def split_text_for_google(text: str, max_bytes: int = MAX_INPUT_BYTES) -> List[str]:
+    """Split text into chunks under `max_bytes` (UTF-8), preferring sentence then word boundaries."""
+    if len(text.encode("utf-8")) <= max_bytes:
+        return [text]
+
+    pieces = re.split(r"(?<=[.!?。！？])\s+|\n+", text)
+    chunks: List[str] = []
+    current = ""
+
+    def _flush():
+        nonlocal current
+        if current.strip():
+            chunks.append(current.strip())
+        current = ""
+
+    for piece in pieces:
+        if not piece:
+            continue
+        candidate = f"{current} {piece}" if current else piece
+        if len(candidate.encode("utf-8")) <= max_bytes:
+            current = candidate
+            continue
+        _flush()
+        if len(piece.encode("utf-8")) <= max_bytes:
+            current = piece
+            continue
+        # A single overlong sentence: fall back to word boundaries.
+        for word in piece.split():
+            candidate = f"{current} {word}" if current else word
+            if len(candidate.encode("utf-8")) <= max_bytes:
+                current = candidate
+            else:
+                _flush()
+                current = word
+    _flush()
+    return chunks
+
 
 class GoogleTTSEngine(BaseTTSEngine):
     engine_name = "google-cloud"
     native_format = "mp3"
+    min_speed = 0.25
+    max_speed = 4.0
+
+    def is_valid_voice(self, voice: str) -> bool:
+        if self._cached_voices and self.client is not None:
+            return any(v.id == voice for v in self._cached_voices)
+        return bool(_GOOGLE_VOICE_RE.match(voice)) and not voice.endswith("Neural")
 
     def __init__(
         self,
@@ -87,9 +138,8 @@ class GoogleTTSEngine(BaseTTSEngine):
         target_voice = voice or self.default_voice
         target_fmt = (response_format or self.native_format).lower()
         language_code = self._extract_language_code(target_voice)
-        clamped_speed = max(0.25, min(4.0, float(speed)))
+        clamped_speed = self.clamp_speed(speed)
 
-        synthesis_input = texttospeech.SynthesisInput(text=text)
         voice_params = texttospeech.VoiceSelectionParams(
             language_code=language_code,
             name=target_voice,
@@ -99,21 +149,26 @@ class GoogleTTSEngine(BaseTTSEngine):
             speaking_rate=clamped_speed,
         )
 
-        def _call_synthesize() -> bytes:
+        def _call_synthesize(chunk: str) -> bytes:
             response = self.client.synthesize_speech(
-                input=synthesis_input,
+                input=texttospeech.SynthesisInput(text=chunk),
                 voice=voice_params,
                 audio_config=audio_config,
                 timeout=self.timeout_seconds,
             )
             return response.audio_content
 
+        chunks = split_text_for_google(text)
         try:
-            if self.timeout_seconds:
-                async with asyncio.timeout(self.timeout_seconds):
-                    audio_bytes = await asyncio.to_thread(_call_synthesize)
-            else:
-                audio_bytes = await asyncio.to_thread(_call_synthesize)
+            parts: List[bytes] = []
+            for chunk in chunks:
+                if self.timeout_seconds:
+                    async with asyncio.timeout(self.timeout_seconds):
+                        parts.append(await asyncio.to_thread(_call_synthesize, chunk))
+                else:
+                    parts.append(await asyncio.to_thread(_call_synthesize, chunk))
+            # MP3 frames are self-delimiting, so concatenating segments yields a playable stream.
+            audio_bytes = b"".join(parts)
         except asyncio.TimeoutError:
             logger.error("Google Cloud TTS timed out after %s seconds", self.timeout_seconds)
             raise TimeoutError(f"Google Cloud TTS timed out after {self.timeout_seconds}s")

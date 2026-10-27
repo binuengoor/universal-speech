@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -24,18 +23,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install uv and dependencies
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          uv venv
-          . .venv/bin/activate
-          uv pip install -e ".[all,dev]"
-          python scripts/download_models.py
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
 
+      - name: Install dependencies from lockfile
+        run: uv sync --frozen --extra all --extra dev
+
+      # Tests that need live third-party services (Edge) or downloaded model
+      # weights are skipped automatically; set RUN_NETWORK_TESTS=1 to include them.
       - name: Run pytest test suite
-        run: |
-          . .venv/bin/activate
-          pytest -v
+        run: uv run --frozen pytest -v
 
   build-and-push:
     needs: test

@@ -2,7 +2,7 @@ import asyncio
 import io
 import logging
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import wave
 
 from gateway.audio import convert_audio_ffmpeg
@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 class PiperEngine(BaseTTSEngine):
     engine_name = "piper"
     native_format = "wav"
+
+    def is_valid_voice(self, voice: str) -> bool:
+        self._discover_models()
+        return voice in self._voice_models_map
 
     def __init__(self, models_dir: str = "models/piper", default_voice: str = "en_US-ryan-medium"):
         self.models_dir = Path(models_dir)
@@ -47,29 +51,21 @@ class PiperEngine(BaseTTSEngine):
     def _resolve_model_paths(self, voice: Optional[str]) -> Optional[Tuple[Path, Optional[Path]]]:
         self._discover_models()
         target = voice or self.default_voice
-        if target in self._voice_models_map:
-            return self._voice_models_map[target]
-        # Try finding default
-        if self.default_voice in self._voice_models_map:
-            return self._voice_models_map[self.default_voice]
-        # Or any available model
-        if self._voice_models_map:
-            first_key = next(iter(self._voice_models_map))
-            return self._voice_models_map[first_key]
-        return None
+        # Never silently substitute another voice: callers cache by voice name.
+        return self._voice_models_map.get(target)
 
     def _get_piper_voice(self, voice: Optional[str]):
         paths = self._resolve_model_paths(voice)
         if not paths:
             raise FileNotFoundError(
-                f"No Piper ONNX voice models found in {self.models_dir}. "
+                f"Piper voice '{voice or self.default_voice}' not found in {self.models_dir}. "
                 f"Please run 'python scripts/download_models.py --engine piper' to download default models."
             )
         onnx_path, config_path = paths
         key = str(onnx_path)
         if key not in self._loaded_voices:
             try:
-                import piper
+                import piper  # provided by the optional 'piper' extra (piper-tts)
                 self._loaded_voices[key] = piper.PiperVoice.load(
                     model_path=str(onnx_path),
                     config_path=str(config_path) if config_path else None,

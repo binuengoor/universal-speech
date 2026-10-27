@@ -1,6 +1,8 @@
 import asyncio
 import io
 import logging
+import os
+import re
 from typing import AsyncGenerator, List, Optional, Tuple
 import edge_tts
 
@@ -10,19 +12,36 @@ from gateway.schemas import VoiceObject
 
 logger = logging.getLogger(__name__)
 
+# e.g. en-US-AriaNeural, en-US-AvaMultilingualNeural, zh-CN-liaoning-XiaobeiNeural
+_EDGE_VOICE_RE = re.compile(r"^[a-z]{2,3}-[A-Za-z]{2,4}(-[A-Za-z]+)*-[A-Za-z]+Neural$")
+
 
 class EdgeTTSEngine(BaseTTSEngine):
     engine_name = "edge-tts"
     native_format = "mp3"
+    min_speed = 0.5
+    max_speed = 3.0
 
-    def __init__(self, default_voice: str = "en-US-AriaNeural", timeout_seconds: float = 5.0):
+    def __init__(self, default_voice: str = "en-US-AriaNeural", timeout_seconds: float = 10.0):
         self.default_voice = default_voice
+        # Idle timeout: maximum silence between two chunks from the Edge service.
         self.timeout_seconds = timeout_seconds
         self._cached_voices: Optional[List[VoiceObject]] = None
+        self._proxy = os.getenv("EDGE_TTS_PROXY") or None
+
+    def is_valid_voice(self, voice: str) -> bool:
+        if self._cached_voices:
+            return any(v.id == voice for v in self._cached_voices)
+        return bool(_EDGE_VOICE_RE.match(voice))
 
     def _format_rate(self, speed: float) -> str:
-        pct = int(round((speed - 1.0) * 100))
+        pct = int(round((self.clamp_speed(speed) - 1.0) * 100))
         return f"{pct:+d}%"
+
+    def _communicate(self, text: str, voice: str, rate: str) -> "edge_tts.Communicate":
+        if self._proxy:
+            return edge_tts.Communicate(text=text, voice=voice, rate=rate, proxy=self._proxy)
+        return edge_tts.Communicate(text=text, voice=voice, rate=rate)
 
     async def synthesize(
         self,
@@ -37,7 +56,7 @@ class EdgeTTSEngine(BaseTTSEngine):
 
         # If zero-transcode (target format is native mp3), stream directly chunk-by-chunk
         if target_fmt == self.native_format:
-            communicate = edge_tts.Communicate(text=text, voice=target_voice, rate=rate_str)
+            communicate = self._communicate(text, target_voice, rate_str)
             try:
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
@@ -62,17 +81,22 @@ class EdgeTTSEngine(BaseTTSEngine):
         target_fmt = (response_format or self.native_format).lower()
         rate_str = self._format_rate(speed)
 
-        communicate = edge_tts.Communicate(text=text, voice=target_voice, rate=rate_str)
+        communicate = self._communicate(text, target_voice, rate_str)
         buffer = io.BytesIO()
 
+        stream = communicate.stream()
         try:
-            async with asyncio.timeout(self.timeout_seconds):
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        buffer.write(chunk["data"])
+            while True:
+                # Idle timeout per chunk, so long inputs that stream steadily never time out.
+                try:
+                    chunk = await asyncio.wait_for(stream.__anext__(), timeout=self.timeout_seconds)
+                except StopAsyncIteration:
+                    break
+                if chunk["type"] == "audio":
+                    buffer.write(chunk["data"])
         except asyncio.TimeoutError:
-            logger.error("Edge-TTS timed out after %s seconds", self.timeout_seconds)
-            raise TimeoutError(f"Edge-TTS timed out after {self.timeout_seconds}s")
+            logger.error("Edge-TTS stalled for more than %s seconds", self.timeout_seconds)
+            raise TimeoutError(f"Edge-TTS stalled for more than {self.timeout_seconds}s")
         except Exception as e:
             logger.error("Edge-TTS synthesis error: %s", str(e))
             raise
@@ -134,11 +158,6 @@ class EdgeTTSEngine(BaseTTSEngine):
             ]
 
     async def health_check(self) -> bool:
-        try:
-            # Quick list_voices or small check
-            if self._cached_voices:
-                return True
-            voices = await self.get_voices()
-            return len(voices) > 0
-        except Exception:
-            return False
+        # Edge is a remote service; availability is tracked by the router's
+        # circuit breaker rather than probed on every health request.
+        return True

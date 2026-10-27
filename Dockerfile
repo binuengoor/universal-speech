@@ -8,13 +8,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for ultra-fast dependency resolution
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install a pinned uv for reproducible, lockfile-driven installs
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /bin/uv
 
-COPY pyproject.toml .
-RUN uv venv /opt/venv && \
-    . /opt/venv/bin/activate && \
-    uv pip install --no-cache .[all]
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+# Dependencies first (cached layer), resolved exactly from uv.lock
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --extra all --no-install-project
+
+# Then the project itself
+COPY gateway/ ./gateway/
+RUN uv sync --frozen --no-dev --extra all --no-editable
 
 # Final runtime image
 FROM python:3.11-slim AS runner

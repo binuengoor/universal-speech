@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from gateway.stt.base import BaseSTTEngine
 
+# Synchronous recognize() can only auto-detect the encoding from file headers for these.
+_SELF_DESCRIBING_EXTENSIONS = (".wav", ".flac")
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,6 +16,13 @@ class GoogleSTTEngine(BaseSTTEngine):
     """
 
     engine_name = "google-cloud"
+    supported_formats = frozenset({"json", "text"})
+    supports_translation = False
+
+    def can_handle(self, filename: str, response_format: str, task: str) -> bool:
+        if not super().can_handle(filename, response_format, task):
+            return False
+        return (filename or "").lower().endswith(_SELF_DESCRIBING_EXTENSIONS)
 
     def __init__(
         self,
@@ -79,11 +89,8 @@ class GoogleSTTEngine(BaseSTTEngine):
         response_format: str = "json",
         temperature: float = 0.0,
     ) -> Any:
-        # Standard recognize with English language target
-        full_text = await asyncio.to_thread(self._sync_transcribe, audio_bytes, "en-US")
-        if response_format == "text":
-            return full_text
-        return {"text": full_text}
+        # Google STT has no speech translation; the router never selects it for this task.
+        raise NotImplementedError("Google Cloud STT does not support translation")
 
     async def health_check(self) -> bool:
         if not self.credentials_path:
