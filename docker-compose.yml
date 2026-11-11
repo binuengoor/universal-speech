@@ -58,7 +58,7 @@ services:
       # Let clients that always send OpenAI voice names or a speed still work.
       - PTTS_VOICE_ALIAS=alloy=Zoey,ash=Trevor,ballad=Hugh,coral=Harper,echo=Micah,fable=Alfie,nova=Juniper,onyx=Easton,sage=Delia,shimmer=Everly,verse=Russell,af_heart=Easton
       - PTTS_OPENAI_VOICES=default
-      - PTTS_IGNORE_SPEED=1
+      - PTTS_IGNORE_SPEED=true
     volumes:
       - phonon-cache:/home/phonon/.cache/huggingface
     mem_limit: 2g

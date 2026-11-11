@@ -314,6 +314,7 @@ Things worth knowing:
 - **English only.** `PTTS_LANG` controls text normalization (numbers, dates, times), not the spoken language. Keep Kokoro or Edge-TTS for Hindi and other languages.
 - **No rate control.** The model always speaks at its natural rate and the server returns `400` for `speed != 1.0`. The gateway handles this: it asks for `speed=1.0` and applies `atempo` locally, so callers can still send `speed`.
 - **Formats.** `wav`, `mp3` and `opus` come straight from the sidecar; `flac`, `aac` and `pcm` are transcoded in the gateway.
+- **Streamed WAV headers.** The sidecar streams, so its WAV replies carry `0xFFFFFFFF` RIFF/data size fields. The gateway rewrites them with the real lengths; if you talk to the sidecar directly, ask for `mp3` or `opus` instead of `wav` to avoid a bogus duration.
 - **Latency.** The sidecar streams from the first ~80ms frame, but the gateway buffers whole responses so it can cache them. For lowest time-to-first-audio point the client at the sidecar (`:8881` on the OpenAI API) or at its Wyoming endpoint (`:10200`, Home Assistant) instead.
 - **Home Assistant.** Add the sidecar as a Wyoming integration on port `10200` in addition to the gateway's OpenAI integration; that path gets real streaming.
 - **Voices.** 37 English voices (US, GB and character voices). Case-insensitive on the gateway (`easton` works), case-sensitive on the sidecar itself.
