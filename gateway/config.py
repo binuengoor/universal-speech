@@ -56,6 +56,19 @@ DEFAULT_ENGINE_VOICE_MAPS: Dict[str, Dict[str, str]] = {
         "shimmer": "en-US-Neural2-G",
         "verse": "en-US-Neural2-I",
     },
+    "phonon": {
+        "alloy": "Zoey",
+        "ash": "Trevor",
+        "ballad": "Hugh",
+        "coral": "Harper",
+        "echo": "Micah",
+        "fable": "Alfie",
+        "nova": "Juniper",
+        "onyx": "Easton",
+        "sage": "Delia",
+        "shimmer": "Everly",
+        "verse": "Russell",
+    },
 }
 
 DEFAULT_SHORT_ALIASES = {
@@ -134,6 +147,12 @@ class GoogleEngineConfig(BaseModel):
     max_concurrency: int = 0
 
 
+class PhononEngineConfig(EngineDetailConfig):
+    """Gradium Phonon, served by the ptts-openai-server sidecar."""
+
+    base_url: str = "http://127.0.0.1:8880"
+
+
 class EnginesConfig(BaseModel):
     edge_tts: EngineDetailConfig = EngineDetailConfig(
         enabled=True, default_voice="en-US-AriaNeural", native_format="mp3", timeout_seconds=10.0
@@ -145,6 +164,14 @@ class EnginesConfig(BaseModel):
         enabled=True, default_voice="af_heart", native_format="wav", max_concurrency=1
     )
     google_cloud: GoogleEngineConfig = Field(default_factory=GoogleEngineConfig)
+    phonon: PhononEngineConfig = PhononEngineConfig(
+        enabled=False,
+        default_voice="Easton",
+        native_format="wav",
+        timeout_seconds=120.0,
+        max_concurrency=2,
+        base_url="http://127.0.0.1:8880",
+    )
 
 
 class STTGroqConfig(BaseModel):

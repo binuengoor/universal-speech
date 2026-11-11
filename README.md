@@ -12,6 +12,7 @@ A production-grade, multi-architecture, OpenAI-compatible Speech Gateway providi
     - ☁️ **Edge-TTS (Default):** Cloud neural synthesis (`en-US-AriaNeural`). Ultra-fast response (~200–300ms), 0% local CPU load.
     - ☁️ **Google Cloud TTS:** Neural2 & Journey expressive voices with low latency.
     - 🟣 **Kokoro-TTS (Primary Offline Fallback):** High-fidelity local ONNX engine (`af_heart`). Studio-quality prosody (~350MB RAM, CPU-optimized).
+    - ⚡ **Phonon (Gradium, Local):** Optional sidecar engine (`model="phonon"`) — 31M-param streaming model, ~64MB of q8 weights, 37 English voices, ~80ms first-audio frames, and correct number/date/time reading.
   - 👂 **Speech-to-Text (STT / ASR & Translations):**
     - ⚡ **Groq Cloud (Default):** Ultra-fast `whisper-large-v3-turbo` and `whisper-large-v3` (~150–250ms latency, generous free tier: 7,200 audio seconds/day = 2 hrs/day free).
     - 💻 **faster-whisper (Local Offline Fallback):** CTranslate2 INT8 CPU runtime (`base`, `small`). Runs efficiently on x86_64 (AVX2) and ARM64 (NEON) without GPU or PyTorch overhead.
@@ -42,6 +43,7 @@ graph TD
             EdgeEngine["☁️ Edge-TTS (Default)<br>• en-US-AriaNeural"]
             GoogleTTSEngine["☁️ Google Cloud TTS<br>• Neural2 / Journey"]
             KokoroEngine["🟣 Kokoro ONNX (Local Fallback)<br>• af_heart"]
+            PhononEngine["⚡ Phonon sidecar (ptts-openai-server)<br>• 37 English voices"]
         end
 
         subgraph STT_Drivers["👂 STT Transcription Engines"]
@@ -59,6 +61,7 @@ graph TD
     Client -->|POST /v1/audio/translations| Router --> STT_Drivers
 
     EdgeEngine -.->|Failure / Cooldown| KokoroEngine
+    PhononEngine -.->|HTTP /v1/audio/speech| PhononSidecar["🐳 phonon-tts container<br>• :8881 OpenAI API<br>• :10200 Wyoming"]
     GroqEngine -.->|Rate Limit / Failure| LocalWhisperEngine
 ```
 
@@ -71,6 +74,7 @@ graph TD
 | **Edge-TTS** *(Default)* | **`en-US-AriaNeural`** | If invalid voice $\to$ `en-US-AriaNeural`<br>If network fails $\to$ Kokoro `af_heart` | Native MP3 | ⚡ **~200–300ms** | Ultra-fast, zero CPU load, studio naturalness |
 | **Kokoro-TTS** *(Local Fallback)* | **`af_heart`** | If invalid voice $\to$ `af_heart` | Native WAV | 🟣 **~1.5s** | High-fidelity offline speech, expressive prosody |
 | **Google Cloud TTS** | **`en-US-Neural2-F`** | If network fails $\to$ Kokoro `af_heart` | Native MP3 | ⚡ **~250ms** | Expressive Journey & Neural2 voices |
+| **Phonon** *(Optional, `model="phonon"`)* | **`Easton`** | Never used as a fallback; bad voices return `400` | Native WAV / MP3 / Opus | ⚡ **~350ms** first audio at the sidecar; the gateway returns whole responses | Local, high-quality, numbers/dates read correctly |
 
 ### OpenAI Voice Alias Mapping
 Standard OpenAI voice names map automatically:
@@ -132,11 +136,20 @@ client = OpenAI(
 
 # 1. Text-to-Speech (TTS)
 speech_response = client.audio.speech.create(
-    model="edge-tts",  # or 'kokoro', 'tts-1'
+    model="edge-tts",  # or 'kokoro', 'phonon', 'tts-1'
     voice="alloy",     # mapped to en-US-AriaNeural
     input="Universal Speech Gateway is ready for production!",
 )
 speech_response.stream_to_file("output.mp3")
+
+# Phonon: local, English, reads numbers and dates correctly
+phonon_response = client.audio.speech.create(
+    model="phonon",
+    voice="Easton",               # any of the 37 Phonon voices; OpenAI names also map
+    input="Delivery window is 9:30 to 11:30, oven at 375 degrees, code 4471.",
+    response_format="wav",
+)
+phonon_response.stream_to_file("phonon.wav")
 
 # 2. Speech-to-Text (Transcriptions)
 with open("speech.mp3", "rb") as audio_file:
@@ -273,6 +286,37 @@ stt:
       language_code: "en-US"
       timeout_seconds: 10.0
 ```
+
+### Optional: Phonon (local, high-quality English)
+
+Phonon runs as a **separate container** (`ghcr.io/gradium-ai/ptts-openai-server`) that speaks the OpenAI `/v1/audio/speech` contract. The gateway's `phonon` driver proxies it, so nothing else in the gateway changes. Both `docker-compose.yml` and `docker-compose.distributed.yml` already start it as `phonon-tts` and point the gateway at it.
+
+```yaml
+engines:
+  phonon:
+    enabled: true
+    base_url: "http://phonon-tts:8880"   # container name, not localhost
+    default_voice: "Easton"
+    native_format: "wav"
+    timeout_seconds: 120.0
+    max_concurrency: 2                   # match PTTS_MAX_CONCURRENT_REQUESTS
+```
+
+```bash
+curl http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"phonon","voice":"Easton","input":"Nine thirty, 4471, 375 degrees.","response_format":"wav"}' \
+  -o phonon.wav
+```
+
+Things worth knowing:
+
+- **English only.** `PTTS_LANG` controls text normalization (numbers, dates, times), not the spoken language. Keep Kokoro or Edge-TTS for Hindi and other languages.
+- **No rate control.** The model always speaks at its natural rate and the server returns `400` for `speed != 1.0`. The gateway handles this: it asks for `speed=1.0` and applies `atempo` locally, so callers can still send `speed`.
+- **Formats.** `wav`, `mp3` and `opus` come straight from the sidecar; `flac`, `aac` and `pcm` are transcoded in the gateway.
+- **Latency.** The sidecar streams from the first ~80ms frame, but the gateway buffers whole responses so it can cache them. For lowest time-to-first-audio point the client at the sidecar (`:8881` on the OpenAI API) or at its Wyoming endpoint (`:10200`, Home Assistant) instead.
+- **Home Assistant.** Add the sidecar as a Wyoming integration on port `10200` in addition to the gateway's OpenAI integration; that path gets real streaming.
+- **Voices.** 37 English voices (US, GB and character voices). Case-insensitive on the gateway (`easton` works), case-sensitive on the sidecar itself.
 
 ---
 

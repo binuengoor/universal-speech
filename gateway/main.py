@@ -173,7 +173,7 @@ async def readiness_check():
     )
 
 
-TTS_ENGINE_MODELS = ("edge-tts", "kokoro", "google-cloud", "piper")
+TTS_ENGINE_MODELS = ("edge-tts", "kokoro", "google-cloud", "piper", "phonon")
 STT_MODELS = {
     "groq": ("groq", "whisper-large-v3-turbo", "whisper-large-v3"),
     "local-whisper": ("local-whisper",),

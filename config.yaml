@@ -77,6 +77,13 @@ engines:
     default_voice: "en-US-Neural2-F"
     native_format: "mp3"
     timeout_seconds: 8.0
+  phonon:
+    enabled: false               # turn on once the ptts-openai-server sidecar is running
+    base_url: "http://phonon-tts:8880"
+    default_voice: "Easton"
+    native_format: "wav"
+    timeout_seconds: 120.0
+    max_concurrency: 2           # CPU-bound; the sidecar streams but the gateway buffers
 
 openai_voice_map:
   alloy: "en-US-AriaNeural"
@@ -214,6 +221,53 @@ curated_voices:
       language: "en-US"
       gender: "Female"
 
+    # Phonon (9 voices) - English only, local sidecar
+    - id: "Easton"
+      engine: "phonon"
+      name: "Easton (Phonon)"
+      language: "en-US"
+      gender: "Male"
+    - id: "Micah"
+      engine: "phonon"
+      name: "Micah (Phonon)"
+      language: "en-US"
+      gender: "Male"
+    - id: "Trevor"
+      engine: "phonon"
+      name: "Trevor (Phonon)"
+      language: "en-US"
+      gender: "Male"
+    - id: "Miles"
+      engine: "phonon"
+      name: "Miles (Phonon)"
+      language: "en-US"
+      gender: "Male"
+    - id: "Juniper"
+      engine: "phonon"
+      name: "Juniper (Phonon)"
+      language: "en-US"
+      gender: "Female"
+    - id: "Zoey"
+      engine: "phonon"
+      name: "Zoey (Phonon)"
+      language: "en-US"
+      gender: "Female"
+    - id: "Everly"
+      engine: "phonon"
+      name: "Everly (Phonon)"
+      language: "en-US"
+      gender: "Female"
+    - id: "Harper"
+      engine: "phonon"
+      name: "Harper (Phonon)"
+      language: "en-US"
+      gender: "Female"
+    - id: "Delia"
+      engine: "phonon"
+      name: "Delia (Phonon)"
+      language: "en-US"
+      gender: "Female"
+
     # ==================== en-GB (British English) ====================
     # Kokoro (3 voices)
     - id: "bf_emma"
@@ -265,6 +319,33 @@ curated_voices:
       name: "Libby Neural (Edge UK)"
       language: "en-GB"
       gender: "Female"
+
+    # Phonon (5 voices)
+    - id: "Maeve"
+      engine: "phonon"
+      name: "Maeve (Phonon UK)"
+      language: "en-GB"
+      gender: "Female"
+    - id: "Freya"
+      engine: "phonon"
+      name: "Freya (Phonon UK)"
+      language: "en-GB"
+      gender: "Female"
+    - id: "Pippa"
+      engine: "phonon"
+      name: "Pippa (Phonon UK)"
+      language: "en-GB"
+      gender: "Female"
+    - id: "Alfie"
+      engine: "phonon"
+      name: "Alfie (Phonon UK)"
+      language: "en-GB"
+      gender: "Male"
+    - id: "Hugh"
+      engine: "phonon"
+      name: "Hugh (Phonon UK)"
+      language: "en-GB"
+      gender: "Male"
 
     # ==================== en-IN (Indian English) ====================
     # Google Cloud (3 voices)

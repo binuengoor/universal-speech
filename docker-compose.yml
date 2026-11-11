@@ -19,14 +19,59 @@ services:
       - SPEECH_CACHE__ENABLED=true
       - SPEECH_CACHE__MAX_ENTRIES=500
       - SPEECH_CACHE__MAX_MEMORY_MB=50
+      - SPEECH_ENGINES__PHONON__ENABLED=true
+      - SPEECH_ENGINES__PHONON__BASE_URL=http://phonon-tts:8880
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-service-account.json
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./models:/app/models
       - ./credentials:/app/credentials:ro
+    depends_on:
+      - phonon-tts
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Phonon (Gradium) TTS sidecar. The gateway exposes it as model="phonon";
+  # clients that need first-audio latency can also hit :8881 directly, and Home
+  # Assistant can use the Wyoming endpoint on :10200.
+  phonon-tts:
+    image: ghcr.io/gradium-ai/ptts-openai-server:latest
+    container_name: phonon-tts
+    restart: unless-stopped
+    ports:
+      - "8881:8880"
+      - "10200:10200"
+    environment:
+      # --lang is text normalization (numbers, dates, times), not the spoken
+      # language: phonon-31m is English-only.
+      - PTTS_LANG=en
+      - PTTS_QUANT=q8
+      - PTTS_REWRITES=all
+      - PTTS_ADDR=0.0.0.0:8880
+      - PTTS_WYOMING_ADDR=0.0.0.0:10200
+      # CPU-bound; 429 above this.
+      - PTTS_MAX_CONCURRENT_REQUESTS=2
+      # Let clients that always send OpenAI voice names or a speed still work.
+      - PTTS_VOICE_ALIAS=alloy=Zoey,ash=Trevor,ballad=Hugh,coral=Harper,echo=Micah,fable=Alfie,nova=Juniper,onyx=Easton,sage=Delia,shimmer=Everly,verse=Russell,af_heart=Easton
+      - PTTS_OPENAI_VOICES=default
+      - PTTS_IGNORE_SPEED=1
+    volumes:
+      - phonon-cache:/home/phonon/.cache/huggingface
+    mem_limit: 2g
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8880 && printf 'GET /health HTTP/1.0\r\n\r\n' >&3 && head -c 200 <&3 | grep -q ok
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  phonon-cache:

@@ -9,6 +9,7 @@ from gateway.engines.base import BaseTTSEngine
 from gateway.engines.edge_engine import EdgeTTSEngine
 from gateway.engines.google_engine import GoogleTTSEngine
 from gateway.engines.kokoro_engine import KokoroEngine
+from gateway.engines.phonon_engine import PhononEngine
 from gateway.engines.piper_engine import PiperEngine
 from gateway.errors import InvalidRequestError, is_client_error
 from gateway.schemas import VoiceObject
@@ -75,11 +76,19 @@ class TTSRouter:
                 timeout_seconds=engines_cfg.google_cloud.timeout_seconds or 8.0,
             )
 
+        if getattr(engines_cfg, "phonon", None) and engines_cfg.phonon.enabled:
+            self.engines["phonon"] = PhononEngine(
+                base_url=engines_cfg.phonon.base_url,
+                default_voice=engines_cfg.phonon.default_voice,
+                timeout_seconds=engines_cfg.phonon.timeout_seconds or 120.0,
+            )
+
         limits = {
             "edge-tts": engines_cfg.edge_tts.max_concurrency,
             "piper": engines_cfg.piper.max_concurrency,
             "kokoro": engines_cfg.kokoro.max_concurrency,
             "google-cloud": engines_cfg.google_cloud.max_concurrency,
+            "phonon": getattr(engines_cfg.phonon, "max_concurrency", 0),
         }
         for name, limit in limits.items():
             if name in self.engines and limit and limit > 0:
@@ -145,6 +154,8 @@ class TTSRouter:
             target_engine_name = "kokoro"
         elif req_model in ("google", "google-tts", "google-cloud", "gcp-tts"):
             target_engine_name = "google-cloud"
+        elif req_model in ("phonon", "phonon-tts", "gradium"):
+            target_engine_name = "phonon"
         elif is_openai_voice:
             # Generic model (tts-1 etc.) with an OpenAI voice name: use the default engine.
             target_engine_name = self.settings.defaults.engine
@@ -159,6 +170,10 @@ class TTSRouter:
                 target_engine_name = "edge-tts"
             elif req_voice.endswith(("-low", "-medium", "-high")) or "piper" in req_voice.lower():
                 target_engine_name = "piper"
+            elif "phonon" in self.engines and self.engines["phonon"].is_valid_voice(req_voice):
+                # Phonon voice names (Easton, Juniper, ...) are unambiguous: no other
+                # engine uses bare capitalised names, so route on the voice alone.
+                target_engine_name = "phonon"
             else:
                 target_engine_name = self.settings.defaults.engine
 
